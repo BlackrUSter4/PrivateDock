@@ -99,7 +99,7 @@ def meta_skill_slots(ship):
     index = {}
     for slot in slots:
         index[slot["skill_id"]] = slot["pos"]
-    return slots, index
+    return slots, index, None
 
 
 def meta_skill_state_by_skill(states):

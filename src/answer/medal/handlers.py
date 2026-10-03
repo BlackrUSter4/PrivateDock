@@ -13,7 +13,6 @@ from src.answer.medal.helpers import (
     medalShopPurchaseResultInsufficient,
     medalShopPurchaseResultStock,
     medalShopPurchaseResultStale,
-    medalShopPurchaseResultUnsupported,
     contains_uint32,
     load_honor_medal_goods_list_entry,
     load_config,
@@ -69,7 +68,6 @@ async def MedalShopPurchase(buffer: bytes, client) -> tuple:
     if total_units == 0:
         return await client.send_message(16109, response)
     total_cost = entry.price * total_units
-    drop_type = DROP_TYPE_SHIP if entry.is_ship != 0 else DROP_TYPE_ITEM
     commander_id = client.commander.commander_id
 
     next_refresh_time = await aget_medal_shop_next_refresh(commander_id)
@@ -93,6 +91,17 @@ async def MedalShopPurchase(buffer: bytes, client) -> tuple:
         response.result = medalShopPurchaseResultInsufficient
         return await client.send_message(16109, response)
 
+    # `is_ship` on honormedal_goods_list entries is unreliable: the "SR <hull
+    # class>" mystery-pick slots (goods_type 2, e.g. id 29/31/32/36/37/44/45)
+    # carry real ship_data_template ids in `goods` but are imported with
+    # is_ship=0. Trusting that flag routed the grant through add_item() with
+    # a ship id as the item id -- no exception, medals/stock still consumed,
+    # but the resulting "item" doesn't exist in the client's item tables, so
+    # the client never shows a reward and the purchase looks like it silently
+    # failed. Classify each picked id by whether it's actually a real ship
+    # template instead, which is correct regardless of the entry's own flag.
+    from src.orm.game_data import get_ship_template_config
+
     # Sequential store calls (no explicit transaction): the guarded stock
     # UPDATE runs first so a "0 rows" result cannot leave consumed medals.
     ok = await adecrement_medal_shop_good_count(commander_id, slot["index"], total_units)
@@ -103,14 +112,17 @@ async def MedalShopPurchase(buffer: bytes, client) -> tuple:
     drops = []
     for rid, units in rewards.items():
         reward_amount = entry.num * units
+        is_real_ship = False
+        try:
+            is_real_ship = bool(get_ship_template_config(rid))
+        except Exception:
+            pass
+        drop_type = DROP_TYPE_SHIP if is_real_ship else DROP_TYPE_ITEM
         if drop_type == DROP_TYPE_ITEM:
             client.commander.add_item(rid, reward_amount)
-        elif drop_type == DROP_TYPE_SHIP:
+        else:
             for _ in range(reward_amount):
                 client.commander.add_ship(rid)
-        else:
-            response.result = medalShopPurchaseResultUnsupported
-            return await client.send_message(16109, response)
         drops.append(protobuf.DROPINFO(type=drop_type, id=rid, number=reward_amount))
     response.drop_list.extend(drops)
 

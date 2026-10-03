@@ -26,6 +26,7 @@ from .helpers import (
     add_owned_ship_meta_repair_tx,
     normalize_ship_exp_books,
 )
+from src.db.async_lock import create_locked_task
 
 META_PT_CLAIM_RESULT_SUCCESS = 0
 META_PT_CLAIM_RESULT_INVALID_GROUP = 1
@@ -173,20 +174,20 @@ def handle_claim_meta_pt_award(buffer: bytes, client: Client) -> tuple:
 
     config = _load_meta_pt_config(payload.group_id)
     if config is None or config.get("type") != 1:
-        asyncio.create_task(client.send_message(34004, response))
+        create_locked_task(client.send_message(34004, response))
         return 0, 34004, None
 
     target_pt = payload.target_pt
     tier_index = _meta_pt_tier_index(config.get("target", []), target_pt)
     if tier_index < 0:
         response.result = META_PT_CLAIM_RESULT_INVALID_TIER
-        asyncio.create_task(client.send_message(34004, response))
+        create_locked_task(client.send_message(34004, response))
         return 0, 34004, None
 
     drops, ok = _build_meta_pt_tier_drops(config.get("award_display", []), tier_index)
     if not ok:
         response.result = META_PT_CLAIM_RESULT_INVALID_TIER
-        asyncio.create_task(client.send_message(34004, response))
+        create_locked_task(client.send_message(34004, response))
         return 0, 34004, None
 
     commander_id = client.commander.commander_id
@@ -251,7 +252,7 @@ def handle_claim_meta_pt_award(buffer: bytes, client: Client) -> tuple:
         response.drop_list.extend(drop_map_to_sorted_list(drops))
         await client.send_message(34004, response)
 
-    asyncio.create_task(_claim())
+    create_locked_task(_claim())
     return 0, 34004, None
 
 
@@ -268,32 +269,32 @@ def handle_meta_quick_tactics_use_books(buffer: bytes, client: Client) -> tuple:
     ensure_commander_meta_loaded(client.commander)
     ship = client.commander.owned_ships_map.get(payload.ship_id)
     if ship is None or payload.skill_id == 0:
-        asyncio.create_task(client.send_message(63320, response))
+        create_locked_task(client.send_message(63320, response))
         return 0, 63320, None
 
     slots, skill_pos, err = meta_skill_slots(ship)
     if err is not None or len(skill_pos) == 0:
-        asyncio.create_task(client.send_message(63320, response))
+        create_locked_task(client.send_message(63320, response))
         return 0, 63320, None
 
     pos = skill_pos.get(payload.skill_id)
     if pos is None:
-        asyncio.create_task(client.send_message(63320, response))
+        create_locked_task(client.send_message(63320, response))
         return 0, 63320, None
 
     book_counts, ok = normalize_ship_exp_books(payload.books)
     if not ok:
-        asyncio.create_task(client.send_message(63320, response))
+        create_locked_task(client.send_message(63320, response))
         return 0, 63320, None
 
     total_exp = 0
     for item_id, count in book_counts.items():
         cfg = get_item_data_statistics_config(item_id)
         if cfg is None or cfg.get("type") != 25:
-            asyncio.create_task(client.send_message(63320, response))
+            create_locked_task(client.send_message(63320, response))
             return 0, 63320, None
         if not client.commander.has_enough_item(item_id, count):
-            asyncio.create_task(client.send_message(63320, response))
+            create_locked_task(client.send_message(63320, response))
             return 0, 63320, None
         exp_per_book = parse_usage_arg_exp_value(cfg.get("usage_arg"))
         total_exp += exp_per_book * count
@@ -369,7 +370,7 @@ def handle_meta_quick_tactics_use_books(buffer: bytes, client: Client) -> tuple:
         response.exp = new_exp
         await client.send_message(63320, response)
 
-    asyncio.create_task(_use_books())
+    create_locked_task(_use_books())
     return 0, 63320, None
 
 
@@ -387,18 +388,18 @@ def handle_meta_character_repair(buffer: bytes, client: Client) -> tuple:
     ship_id = payload.ship_id
     repair_id = payload.repair_id
     if ship_id == 0 or repair_id == 0:
-        asyncio.create_task(client.send_message(63302, response))
+        create_locked_task(client.send_message(63302, response))
         return 0, 63302, None
 
     ship = client.commander.owned_ships_map.get(ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(63302, response))
+        create_locked_task(client.send_message(63302, response))
         return 0, 63302, None
 
     meta_id = ship["ship_id"] // 10 if isinstance(ship, dict) else ship.ship_id // 10
     meta_cfg = get_ship_strengthen_meta_config(meta_id)
     if meta_cfg is None:
-        asyncio.create_task(client.send_message(63302, response))
+        create_locked_task(client.send_message(63302, response))
         return 0, 63302, None
 
     allowed = {
@@ -426,16 +427,16 @@ def handle_meta_character_repair(buffer: bytes, client: Client) -> tuple:
             break
 
     if not valid_step:
-        asyncio.create_task(client.send_message(63302, response))
+        create_locked_task(client.send_message(63302, response))
         return 0, 63302, None
 
     repair_cfg = get_ship_meta_repair_config(repair_id)
     if repair_cfg is None or repair_cfg.get("item_id", 0) == 0 or repair_cfg.get("item_num", 0) == 0:
-        asyncio.create_task(client.send_message(63302, response))
+        create_locked_task(client.send_message(63302, response))
         return 0, 63302, None
 
     if not client.commander.has_enough_item(repair_cfg["item_id"], repair_cfg["item_num"]):
-        asyncio.create_task(client.send_message(63302, response))
+        create_locked_task(client.send_message(63302, response))
         return 0, 63302, None
 
     async def _repair():
@@ -445,7 +446,7 @@ def handle_meta_character_repair(buffer: bytes, client: Client) -> tuple:
         response.result = 0
         await client.send_message(63302, response)
 
-    asyncio.create_task(_repair())
+    create_locked_task(_repair())
     return 0, 63302, None
 
 
@@ -463,23 +464,23 @@ def handle_meta_char_active_energy(buffer: bytes, client: Client) -> tuple:
     ship_id = payload.ship_id
     ship = client.commander.owned_ships_map.get(ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     s_ship_id = ship["ship_id"] if isinstance(ship, dict) else ship.ship_id
     breakout_cfg = get_ship_meta_breakout_config(s_ship_id)
     if breakout_cfg is None or breakout_cfg.get("breakout_id", 0) == 0:
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     s_level = ship["level"] if isinstance(ship, dict) else ship.level
     if s_level < breakout_cfg.get("level", 0):
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     meta_cfg = get_ship_strengthen_meta_config(s_ship_id // 10)
     if meta_cfg is None:
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     s_id = ship["id"] if isinstance(ship, dict) else ship.id
@@ -492,11 +493,11 @@ def handle_meta_char_active_energy(buffer: bytes, client: Client) -> tuple:
                 total_repair_exp += rcfg.get("repair_exp", 0)
         repair_percent = total_repair_exp * 100 // meta_cfg["repair_total_exp"]
         if repair_percent < breakout_cfg["repair"]:
-            asyncio.create_task(client.send_message(63304, response))
+            create_locked_task(client.send_message(63304, response))
             return 0, 63304, None
 
     if breakout_cfg.get("gold", 0) > 0 and not client.commander.has_enough_gold(breakout_cfg["gold"]):
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     item1 = breakout_cfg.get("item1", 0)
@@ -505,16 +506,16 @@ def handle_meta_char_active_energy(buffer: bytes, client: Client) -> tuple:
     item2_num = breakout_cfg.get("item2_num", 0)
 
     if item1 != 0 and item1_num > 0 and not client.commander.has_enough_item(item1, item1_num):
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     if item2 != 0 and item2_num > 0 and not client.commander.has_enough_item(item2, item2_num):
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     next_template = get_ship_data_template_config(breakout_cfg["breakout_id"])
     if next_template is None:
-        asyncio.create_task(client.send_message(63304, response))
+        create_locked_task(client.send_message(63304, response))
         return 0, 63304, None
 
     async def _active_energy():
@@ -541,7 +542,7 @@ def handle_meta_char_active_energy(buffer: bytes, client: Client) -> tuple:
         response.result = 0
         await client.send_message(63304, response)
 
-    asyncio.create_task(_active_energy())
+    create_locked_task(_active_energy())
     return 0, 63304, None
 
 
@@ -558,13 +559,13 @@ def handle_meta_character_unlock_ship(buffer: bytes, client: Client) -> tuple:
     ensure_commander_meta_loaded(client.commander)
     meta_cfg = get_ship_strengthen_meta_config(payload.meta_id)
     if meta_cfg is None or meta_cfg.get("type") != 1 or meta_cfg.get("ship_id", 0) == 0:
-        asyncio.create_task(client.send_message(63306, response))
+        create_locked_task(client.send_message(63306, response))
         return 0, 63306, None
 
     target_ship_id = meta_cfg["ship_id"]
     ship_template = get_ship_data_template_config(target_ship_id)
     if ship_template is None:
-        asyncio.create_task(client.send_message(63306, response))
+        create_locked_task(client.send_message(63306, response))
         return 0, 63306, None
 
     commander_id = client.commander.commander_id
@@ -605,7 +606,7 @@ def handle_meta_character_unlock_ship(buffer: bytes, client: Client) -> tuple:
         response.ship.CopyFrom(_build_shipinfo_from_ship(ship, 0))
         await client.send_message(63306, response)
 
-    asyncio.create_task(_unlock())
+    create_locked_task(_unlock())
     return 0, 63306, None
 
 
@@ -624,7 +625,7 @@ def handle_meta_character_tactics_info_request(buffer: bytes, client: Client) ->
         if ship is None:
             continue
         s_id = ship["id"] if isinstance(ship, dict) else ship.id
-        slots, _, err = meta_skill_slots(ship)
+        slots, _skill_pos, err = meta_skill_slots(ship)
         if err is not None or len(slots) == 0:
             continue
         state, skill_states, _ = get_meta_tactics_snapshot(client.commander.commander_id, s_id)
@@ -637,7 +638,7 @@ def handle_meta_character_tactics_info_request(buffer: bytes, client: Client) ->
         info.skill_exp.extend(build_meta_skill_exp_payload(skill_states))
         response.info_list.append(info)
 
-    asyncio.create_task(client.send_message(63318, response))
+    create_locked_task(client.send_message(63318, response))
     return 0, 63318, None
 
 
@@ -658,12 +659,12 @@ def handle_meta_character_tactics_request(buffer: bytes, client: Client) -> tupl
     ensure_commander_meta_loaded(client.commander)
     ship = client.commander.owned_ships_map.get(payload.ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(63314, response))
+        create_locked_task(client.send_message(63314, response))
         return 0, 63314, None
 
-    slots, _, err = meta_skill_slots(ship)
+    slots, _skill_pos, err = meta_skill_slots(ship)
     if err is not None or len(slots) == 0:
-        asyncio.create_task(client.send_message(63314, response))
+        create_locked_task(client.send_message(63314, response))
         return 0, 63314, None
 
     s_id = ship["id"] if isinstance(ship, dict) else ship.id
@@ -682,7 +683,7 @@ def handle_meta_character_tactics_request(buffer: bytes, client: Client) -> tupl
         t.finish_cnt = task["finish_cnt"]
         response.tasks.append(t)
 
-    asyncio.create_task(client.send_message(63314, response))
+    create_locked_task(client.send_message(63314, response))
     return 0, 63314, None
 
 
@@ -700,17 +701,17 @@ def handle_meta_character_tactics_switch(buffer: bytes, client: Client) -> tuple
     ensure_commander_meta_loaded(client.commander)
     ship = client.commander.owned_ships_map.get(payload.ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(63308, response))
+        create_locked_task(client.send_message(63308, response))
         return 0, 63308, None
 
     slots, skill_pos, err = meta_skill_slots(ship)
     if err is not None or len(slots) == 0:
-        asyncio.create_task(client.send_message(63308, response))
+        create_locked_task(client.send_message(63308, response))
         return 0, 63308, None
 
     target_pos = skill_pos.get(payload.skill_id)
     if target_pos is None:
-        asyncio.create_task(client.send_message(63308, response))
+        create_locked_task(client.send_message(63308, response))
         return 0, 63308, None
 
     commander_id = client.commander.commander_id
@@ -738,7 +739,7 @@ def handle_meta_character_tactics_switch(buffer: bytes, client: Client) -> tuple
         response.switch_cnt = state["switch_cnt"]
         await client.send_message(63308, response)
 
-    asyncio.create_task(_switch())
+    create_locked_task(_switch())
     return 0, 63308, None
 
 
@@ -756,17 +757,17 @@ def handle_meta_character_tactics_level_up(buffer: bytes, client: Client) -> tup
     ensure_commander_meta_loaded(client.commander)
     ship = client.commander.owned_ships_map.get(payload.ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(63310, response))
+        create_locked_task(client.send_message(63310, response))
         return 0, 63310, None
 
     slots, skill_pos, err = meta_skill_slots(ship)
     if err is not None or len(skill_pos) == 0:
-        asyncio.create_task(client.send_message(63310, response))
+        create_locked_task(client.send_message(63310, response))
         return 0, 63310, None
 
     pos = skill_pos.get(payload.skill_id)
     if pos is None:
-        asyncio.create_task(client.send_message(63310, response))
+        create_locked_task(client.send_message(63310, response))
         return 0, 63310, None
 
     commander_id = client.commander.commander_id
@@ -799,7 +800,7 @@ def handle_meta_character_tactics_level_up(buffer: bytes, client: Client) -> tup
         response.switch_cnt = state["switch_cnt"]
         await client.send_message(63310, response)
 
-    asyncio.create_task(_level_up())
+    create_locked_task(_level_up())
     return 0, 63310, None
 
 
@@ -816,22 +817,22 @@ def handle_meta_character_tactics_unlock(buffer: bytes, client: Client) -> tuple
     ensure_commander_meta_loaded(client.commander)
     ship = client.commander.owned_ships_map.get(payload.ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(63312, response))
+        create_locked_task(client.send_message(63312, response))
         return 0, 63312, None
 
     slots, skill_pos, err = meta_skill_slots(ship)
     if err is not None or len(skill_pos) == 0:
-        asyncio.create_task(client.send_message(63312, response))
+        create_locked_task(client.send_message(63312, response))
         return 0, 63312, None
 
     pos = skill_pos.get(payload.skill_id)
     if pos is None:
-        asyncio.create_task(client.send_message(63312, response))
+        create_locked_task(client.send_message(63312, response))
         return 0, 63312, None
 
     skill_cfg = get_ship_meta_skill_task_config(payload.skill_id, 1)
     if skill_cfg is None:
-        asyncio.create_task(client.send_message(63312, response))
+        create_locked_task(client.send_message(63312, response))
         return 0, 63312, None
 
     required_item = 0
@@ -845,7 +846,7 @@ def handle_meta_character_tactics_unlock(buffer: bytes, client: Client) -> tuple
             break
 
     if required_item == 0 or required_count == 0 or not client.commander.has_enough_item(required_item, required_count):
-        asyncio.create_task(client.send_message(63312, response))
+        create_locked_task(client.send_message(63312, response))
         return 0, 63312, None
 
     commander_id = client.commander.commander_id
@@ -870,7 +871,7 @@ def handle_meta_character_tactics_unlock(buffer: bytes, client: Client) -> tuple
         response.result = 0
         await client.send_message(63312, response)
 
-    asyncio.create_task(_unlock_skill())
+    create_locked_task(_unlock_skill())
     return 0, 63312, None
 
 
@@ -889,19 +890,19 @@ def handle_meta_character_repair_legacy(buffer: bytes, client: Client) -> tuple:
     repair_ids = list(payload.attr_list) if payload.attr_list else []
 
     if ship_id == 0 or len(repair_ids) == 0:
-        asyncio.create_task(client.send_message(70002, response))
+        create_locked_task(client.send_message(70002, response))
         return 0, 70002, None
 
     ship = client.commander.owned_ships_map.get(ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(70002, response))
+        create_locked_task(client.send_message(70002, response))
         return 0, 70002, None
 
     s_ship_id = ship["ship_id"] if isinstance(ship, dict) else ship.ship_id
     meta_id = s_ship_id // 10
     meta_cfg = get_ship_strengthen_meta_config(meta_id)
     if meta_cfg is None:
-        asyncio.create_task(client.send_message(70002, response))
+        create_locked_task(client.send_message(70002, response))
         return 0, 70002, None
 
     allowed = {
@@ -918,7 +919,7 @@ def handle_meta_character_repair_legacy(buffer: bytes, client: Client) -> tuple:
     required_items = {}
     for rid in repair_ids:
         if rid == 0:
-            asyncio.create_task(client.send_message(70002, response))
+            create_locked_task(client.send_message(70002, response))
             return 0, 70002, None
 
         valid_step = False
@@ -935,12 +936,12 @@ def handle_meta_character_repair_legacy(buffer: bytes, client: Client) -> tuple:
                 break
 
         if not valid_step:
-            asyncio.create_task(client.send_message(70002, response))
+            create_locked_task(client.send_message(70002, response))
             return 0, 70002, None
 
         repair_cfg = get_ship_meta_repair_config(rid)
         if repair_cfg is None or repair_cfg.get("item_id", 0) == 0 or repair_cfg.get("item_num", 0) == 0:
-            asyncio.create_task(client.send_message(70002, response))
+            create_locked_task(client.send_message(70002, response))
             return 0, 70002, None
 
         item_id = repair_cfg["item_id"]
@@ -949,7 +950,7 @@ def handle_meta_character_repair_legacy(buffer: bytes, client: Client) -> tuple:
 
     for item_id, item_num in required_items.items():
         if not client.commander.has_enough_item(item_id, item_num):
-            asyncio.create_task(client.send_message(70002, response))
+            create_locked_task(client.send_message(70002, response))
             return 0, 70002, None
 
     async def _repair_legacy():
@@ -961,7 +962,7 @@ def handle_meta_character_repair_legacy(buffer: bytes, client: Client) -> tuple:
         response.result = 0
         await client.send_message(70002, response)
 
-    asyncio.create_task(_repair_legacy())
+    create_locked_task(_repair_legacy())
     return 0, 70002, None
 
 
@@ -979,23 +980,23 @@ def handle_meta_char_active_energy_legacy(buffer: bytes, client: Client) -> tupl
     ship_id = payload.id
     ship = client.commander.owned_ships_map.get(ship_id)
     if ship is None:
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     s_ship_id = ship["ship_id"] if isinstance(ship, dict) else ship.ship_id
     breakout_cfg = get_ship_meta_breakout_config(s_ship_id)
     if breakout_cfg is None or breakout_cfg.get("breakout_id", 0) == 0:
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     s_level = ship["level"] if isinstance(ship, dict) else ship.level
     if s_level < breakout_cfg.get("level", 0):
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     meta_cfg = get_ship_strengthen_meta_config(s_ship_id // 10)
     if meta_cfg is None:
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     s_id = ship["id"] if isinstance(ship, dict) else ship.id
@@ -1008,11 +1009,11 @@ def handle_meta_char_active_energy_legacy(buffer: bytes, client: Client) -> tupl
                 total_repair_exp += rcfg.get("repair_exp", 0)
         repair_percent = total_repair_exp * 100 // meta_cfg["repair_total_exp"]
         if repair_percent < breakout_cfg["repair"]:
-            asyncio.create_task(client.send_message(70004, response))
+            create_locked_task(client.send_message(70004, response))
             return 0, 70004, None
 
     if breakout_cfg.get("gold", 0) > 0 and not client.commander.has_enough_gold(breakout_cfg["gold"]):
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     item1 = breakout_cfg.get("item1", 0)
@@ -1021,16 +1022,16 @@ def handle_meta_char_active_energy_legacy(buffer: bytes, client: Client) -> tupl
     item2_num = breakout_cfg.get("item2_num", 0)
 
     if item1 != 0 and item1_num > 0 and not client.commander.has_enough_item(item1, item1_num):
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     if item2 != 0 and item2_num > 0 and not client.commander.has_enough_item(item2, item2_num):
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     next_template = get_ship_data_template_config(breakout_cfg["breakout_id"])
     if next_template is None:
-        asyncio.create_task(client.send_message(70004, response))
+        create_locked_task(client.send_message(70004, response))
         return 0, 70004, None
 
     async def _active_energy_legacy():
@@ -1057,7 +1058,7 @@ def handle_meta_char_active_energy_legacy(buffer: bytes, client: Client) -> tupl
         response.result = 0
         await client.send_message(70004, response)
 
-    asyncio.create_task(_active_energy_legacy())
+    create_locked_task(_active_energy_legacy())
     return 0, 70004, None
 
 
@@ -1074,13 +1075,13 @@ def handle_meta_character_unlock_ship_legacy(buffer: bytes, client: Client) -> t
     ensure_commander_meta_loaded(client.commander)
     meta_cfg = get_ship_strengthen_meta_config(payload.id)
     if meta_cfg is None or meta_cfg.get("type") != 1 or meta_cfg.get("ship_id", 0) == 0:
-        asyncio.create_task(client.send_message(70006, response))
+        create_locked_task(client.send_message(70006, response))
         return 0, 70006, None
 
     target_ship_id = meta_cfg["ship_id"]
     ship_template = get_ship_data_template_config(target_ship_id)
     if ship_template is None:
-        asyncio.create_task(client.send_message(70006, response))
+        create_locked_task(client.send_message(70006, response))
         return 0, 70006, None
 
     commander_id = client.commander.commander_id
@@ -1121,5 +1122,6 @@ def handle_meta_character_unlock_ship_legacy(buffer: bytes, client: Client) -> t
         response.ship.CopyFrom(_build_shipinfo_from_ship(ship, 0))
         await client.send_message(70006, response)
 
-    asyncio.create_task(_unlock_legacy())
+    create_locked_task(_unlock_legacy())
     return 0, 70006, None
+
