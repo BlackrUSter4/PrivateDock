@@ -6,6 +6,7 @@ from src.protobuf import protobuf
 from src.db.store import get_default_store
 from src.consts.disconnect_reasons import DR_CONNECTION_TO_SERVER_LOST
 from src.logger.logger import log_event, LOG_LEVEL_DEBUG, LOG_LEVEL_ERROR, LOG_LEVEL_WARN
+from src.db.async_lock import create_locked_task
 
 
 def handle_cheater_mark(buffer: bytes, client: Client) -> tuple[int, int, Optional[Exception]]:
@@ -17,7 +18,7 @@ def handle_cheater_mark(buffer: bytes, client: Client) -> tuple[int, int, Option
 
     response = protobuf.SC_10995()
     response.result = payload.type
-    asyncio.create_task(client.send_message(10995, response))
+    create_locked_task(client.send_message(10995, response))
     return 0, 10995, None
 
 
@@ -40,7 +41,7 @@ def handle_give_item(buffer: bytes, client: Client) -> tuple[int, int, Optional[
     drop.number = 99
     response.award_list.append(drop)
     response.number.append(99)
-    asyncio.create_task(client.send_message(11203, response))
+    create_locked_task(client.send_message(11203, response))
     return 0, 11203, None
 
 
@@ -54,7 +55,7 @@ def handle_give_resources(buffer: bytes, client: Client) -> tuple[int, int, Opti
     if payload.type not in (1, 2):
         response = protobuf.SC_11014()
         response.result = 1
-        asyncio.create_task(client.send_message(11014, response))
+        create_locked_task(client.send_message(11014, response))
         return 0, 11014, None
 
     field_id = 7 if payload.type == 1 else 5
@@ -99,7 +100,7 @@ def handle_give_resources(buffer: bytes, client: Client) -> tuple[int, int, Opti
 
     response = protobuf.SC_11014()
     response.result = 0
-    asyncio.create_task(client.send_message(11014, response))
+    create_locked_task(client.send_message(11014, response))
     return 0, 11014, None
 
 
@@ -128,7 +129,7 @@ def handle_click_mingshi(buffer: bytes, client: Client) -> tuple[int, int, Optio
 
     response = protobuf.SC_11507()
     response.result = 0
-    asyncio.create_task(client.send_message(11507, response))
+    create_locked_task(client.send_message(11507, response))
     return 0, 11507, None
 
 
@@ -193,10 +194,40 @@ def handle_player_buffs(_buffer: bytes, client: Client) -> tuple[int, int, Optio
     return 0, 11015, None
 
 
+async def _send_sell_result(client: Client, response) -> None:
+    await client.send_message(15009, response)
+    try:
+        from src.answer.player_resource_sync import send_player_resource_sync
+        send_player_resource_sync(client)
+    except Exception:
+        pass
+
+
 def handle_sell_item(_buffer: bytes, client: Client) -> tuple[int, int, Optional[Exception]]:
+    try:
+        payload = protobuf.CS_15008()
+        payload.ParseFromString(_buffer)
+        items = [(int(item.id), int(item.count)) for item in payload.item_list]
+        if not items:
+            raise ValueError("empty sell item list")
+
+        from src.orm.item import sell_commander_items
+        awards = sell_commander_items(client.commander.commander_id, items)
+    except Exception as e:
+        log_event("MiscOps", "SellItem",
+                  f"Failed: commander={getattr(client.commander, 'commander_id', 0)}: {e} "
+                  f"raw_buffer_hex={_buffer.hex()} raw_buffer_len={len(_buffer)}",
+                  LOG_LEVEL_ERROR)
+        response = protobuf.SC_15009(result=1)
+        create_locked_task(_send_sell_result(client, response))
+        return 0, 15009, None
+
     response = protobuf.SC_15009()
     response.result = 0
-    asyncio.create_task(client.send_message(15009, response))
+    create_locked_task(_send_sell_result(client, response))
+    log_event("MiscOps", "SellItem",
+              f"commander={client.commander.commander_id} items={items} awards={awards}",
+              LOG_LEVEL_DEBUG)
     return 0, 15009, None
 
 
@@ -223,12 +254,12 @@ def handle_console_command(buffer: bytes, client: Client) -> tuple[int, int, Opt
     elif cmd == "kick":
         response.result = 0
         response.msg = "CMD:kick Result:ok"
-        asyncio.create_task(_kick_and_send(client, response))
+        create_locked_task(_kick_and_send(client, response))
         return 0, 11101, None
     else:
         response.msg = f"CMD:{cmd} Result:fail"
 
-    asyncio.create_task(client.send_message(11101, response))
+    create_locked_task(client.send_message(11101, response))
     return 0, 11101, None
 
 

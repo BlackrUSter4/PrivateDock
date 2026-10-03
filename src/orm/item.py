@@ -368,6 +368,97 @@ def consume_item(commander_id: int, type_id: int, count: int):
                 pass
 
 
+def get_item_sell_price(item_id: int) -> tuple[int, int]:
+    """Return the client-visible (resource_id, unit_price) for an item.
+
+    Item configs use ``price = [resource_id, amount]``. An empty/absent price
+    means the item can be discarded but grants nothing, matching BagProxy.
+    """
+    cfg = _load_virtual_item_config(item_id)
+    raw = cfg.get("price") if cfg else None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw.strip() else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = None
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return 0, 0
+    try:
+        resource_id = int(raw[0] or 0)
+        amount = int(raw[1] or 0)
+    except (TypeError, ValueError):
+        return 0, 0
+    return resource_id, max(0, amount)
+
+
+def sell_commander_items(commander_id: int, items: list[tuple[int, int]]) -> dict[int, int]:
+    """Atomically sell bag items and return ``{resource_id: amount}`` awards."""
+    from src.orm.resource import OwnedResource, dealias_resource
+
+    normalized: dict[int, int] = {}
+    for item_id, count in items:
+        item_id = int(item_id)
+        count = int(count)
+        if item_id <= 0 or count <= 0:
+            raise ValueError("invalid sell item entry")
+        normalized[item_id] = normalized.get(item_id, 0) + count
+
+    prices = {item_id: get_item_sell_price(item_id) for item_id in normalized}
+    awards: dict[int, int] = {}
+    with get_sync_session() as session:
+        rows = session.execute(
+            select(CommanderItem).where(
+                CommanderItem.commander_id == commander_id,
+                CommanderItem.item_id.in_(normalized),
+            )
+        ).scalars().all()
+        owned = {int(row.item_id): row for row in rows}
+        for item_id, count in normalized.items():
+            if item_id not in owned or int(owned[item_id].count or 0) < count:
+                raise ValueError(f"not enough item {item_id}")
+
+        for item_id, count in normalized.items():
+            obj = owned[item_id]
+            obj.count -= count
+            if obj.count <= 0:
+                session.delete(obj)
+
+            resource_id, unit_price = prices[item_id]
+            if resource_id <= 0 or unit_price <= 0:
+                continue
+            resource_id = dealias_resource(resource_id)
+            rewards = unit_price * count
+            awards[resource_id] = awards.get(resource_id, 0) + rewards
+
+        for resource_id, amount in awards.items():
+            resource = session.execute(
+                select(OwnedResource).where(
+                    OwnedResource.commander_id == commander_id,
+                    OwnedResource.resource_id == resource_id,
+                )
+            ).scalar_one_or_none()
+            if resource is None:
+                session.add(OwnedResource(
+                    commander_id=commander_id,
+                    resource_id=resource_id,
+                    amount=amount,
+                ))
+            else:
+                resource.amount += amount
+
+        session.commit()
+
+    try:
+        from src.orm.active_commander import _bump_amount_map, _bump_count_map
+        for item_id, count in normalized.items():
+            _bump_count_map(commander_id, "commander_items_map", item_id, -count, "item_id")
+        for resource_id, amount in awards.items():
+            _bump_amount_map(commander_id, "owned_resources_map", resource_id, amount, "resource_id")
+    except Exception:
+        pass
+    return awards
+
+
 def _load_virtual_item_config(item_id: int) -> Optional[dict]:
     from src.orm.config_entry import get_config_entry_sync
     for category in ("sharecfgdata/item_data_statistics.json",

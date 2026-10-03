@@ -5,7 +5,7 @@ from typing import Optional
 from src.connection.client import Client
 from src.connection.server import generate_packet_header
 from src.protobuf import protobuf
-from src.logger.logger import log_event, LOG_LEVEL_INFO
+from src.logger.logger import log_event, LOG_LEVEL_ERROR, LOG_LEVEL_INFO
 
 from .helpers import (
     apply_commander_morale_recovery,
@@ -20,12 +20,13 @@ from .helpers import (
     ATTIRE_TYPE_CHAT_FRAME,
     ATTIRE_TYPE_COMBAT_UI,
 )
+from src.db.async_lock import create_locked_task
 
 
 def handle_send_heartbeat(_buffer: bytes, client: Client) -> tuple[int, int, Optional[Exception]]:
     response = protobuf.SC_10101()
     response.state = 0
-    asyncio.create_task(client.send_message(10101, response))
+    create_locked_task(client.send_message(10101, response))
     return 0, 10101, None
 
 
@@ -129,7 +130,7 @@ def handle_player_exist(buffer: bytes, client: Client) -> tuple[int, int, Option
         response.user_id = commander.commander_id
         response.level = commander.level
 
-    asyncio.create_task(client.send_message(10027, response))
+    create_locked_task(client.send_message(10027, response))
     return 0, 10027, None
 
 
@@ -195,6 +196,14 @@ def handle_last_login(_buffer: bytes, client: Client) -> tuple[int, int, Optiona
     data = response.SerializeToString()
     header = generate_packet_header(11000, data, client.packet_index)
     client.write_to_buffer(header + data)
+
+    if not client._login_backup_scheduled:
+        try:
+            from src.db.backup import schedule_database_backup
+            schedule_database_backup(f"login commander={client.commander.commander_id}")
+            client._login_backup_scheduled = True
+        except Exception as e:
+            log_event("DB", "Backup", f"failed to schedule login backup: {e}", LOG_LEVEL_ERROR)
     return 0, 11000, None
 
 
@@ -214,7 +223,7 @@ def handle_change_ship_lock_state(buffer: bytes, client: Client) -> tuple[int, i
     for ship_id in ship_ids:
         ship = commander.owned_ships_map.get(ship_id)
         if ship is None:
-            asyncio.create_task(client.send_message(12023, response))
+            create_locked_task(client.send_message(12023, response))
             return 0, 12023, None
         ship_list.append(ship)
 
@@ -231,7 +240,7 @@ def handle_change_ship_lock_state(buffer: bytes, client: Client) -> tuple[int, i
             session.commit()
 
     response.result = 0
-    asyncio.create_task(client.send_message(12023, response))
+    create_locked_task(client.send_message(12023, response))
     return 0, 12023, None
 
 
@@ -249,13 +258,13 @@ def handle_change_selected_skin(buffer: bytes, client: Client) -> tuple[int, int
     ship = commander.owned_ships_map.get(data.ship_id)
     if ship is None:
         response.result = 1
-        asyncio.create_task(client.send_message(12203, response))
+        create_locked_task(client.send_message(12203, response))
         return 0, 12203, None
 
     if data.skin_id != 0:
         if data.skin_id not in commander.owned_skins_map:
             response.result = 2
-            asyncio.create_task(client.send_message(12203, response))
+            create_locked_task(client.send_message(12203, response))
             return 0, 12203, None
 
     from src.db.session import get_sync_session
@@ -271,7 +280,7 @@ def handle_change_selected_skin(buffer: bytes, client: Client) -> tuple[int, int
     except Exception:
         response.result = 3
 
-    asyncio.create_task(client.send_message(12203, response))
+    create_locked_task(client.send_message(12203, response))
     return 0, 12203, None
 
 
@@ -291,7 +300,7 @@ def handle_change_manifesto(buffer: bytes, client: Client) -> tuple[int, int, Op
     except Exception:
         response.result = 1
 
-    asyncio.create_task(client.send_message(11010, response))
+    create_locked_task(client.send_message(11010, response))
     return 0, 11010, None
 
 
@@ -309,7 +318,7 @@ def handle_attire_apply(buffer: bytes, client: Client) -> tuple[int, int, Option
 
     if attire_type not in (ATTIRE_TYPE_ICON_FRAME, ATTIRE_TYPE_CHAT_FRAME, ATTIRE_TYPE_COMBAT_UI):
         response.result = 1
-        asyncio.create_task(client.send_message(11006, response))
+        create_locked_task(client.send_message(11006, response))
         return 0, 11006, None
 
     if attire_id != 0:
@@ -319,7 +328,7 @@ def handle_attire_apply(buffer: bytes, client: Client) -> tuple[int, int, Option
         owned = commander_has_attire(client.commander.commander_id, attire_type, attire_id, now_unix)
         if not owned:
             response.result = 2
-            asyncio.create_task(client.send_message(11006, response))
+            create_locked_task(client.send_message(11006, response))
             return 0, 11006, None
 
     if attire_type == ATTIRE_TYPE_ICON_FRAME:
@@ -337,5 +346,5 @@ def handle_attire_apply(buffer: bytes, client: Client) -> tuple[int, int, Option
         log_event("Attire", "ApplyError", f"failed to update attire style: {e}", LOG_LEVEL_WARN)
         response.result = 1
 
-    asyncio.create_task(client.send_message(11006, response))
+    create_locked_task(client.send_message(11006, response))
     return 0, 11006, None

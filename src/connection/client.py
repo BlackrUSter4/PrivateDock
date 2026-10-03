@@ -35,6 +35,7 @@ class Client:
         self.auth_arg2 = 0
         self.connected_at = None
         self.previous_login_at = None
+        self._login_backup_scheduled = False
         self._closed = False
         self._metrics = ClientMetrics()
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=512)

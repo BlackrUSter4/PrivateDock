@@ -3,6 +3,7 @@ from typing import Optional
 
 from src.connection.client import Client
 from src.protobuf import protobuf
+from src.db.async_lock import create_locked_task
 
 
 def build_resource_snapshot(resources) -> list[dict]:
@@ -14,11 +15,12 @@ def build_resource_snapshot(resources) -> list[dict]:
 def send_player_resource_sync(client: Client) -> tuple[int, int, Optional[Exception]]:
     if client is None or client.commander is None:
         return 0, 11004, Exception("missing commander")
-    res_map = getattr(client.commander, "owned_resources_map", {}) or {}
+    from src.orm.resource import list_owned_resources_sync
+
     response = protobuf.SC_11004()
-    for rid, v in res_map.items():
+    for row in list_owned_resources_sync(client.commander.commander_id):
         response.resource_list.append(
-            protobuf.RESOURCE(type=int(rid), num=int(v.get("amount", 0)))
+            protobuf.RESOURCE(type=int(row["resource_id"]), num=int(row["amount"]))
         )
-    asyncio.create_task(client.send_message(11004, response))
+    create_locked_task(client.send_message(11004, response))
     return 0, 11004, None

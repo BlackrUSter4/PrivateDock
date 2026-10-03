@@ -98,9 +98,11 @@ def _mail_attachment_to_drop_info(att: dict) -> dict:
     }
 
 
-async def _collect_attachment_drops(commander_id: int, mails: list, apply: bool) -> tuple[list, list]:
+async def _collect_attachment_drops(client: Client, mails: list, apply: bool) -> tuple[list, list, list]:
+    commander_id = client.commander.commander_id
     mail_ids = []
     drops = []
+    new_ships = []
     for mail in mails:
         attachments = mail.get("attachments", []) or []
         if not attachments:
@@ -121,6 +123,9 @@ async def _collect_attachment_drops(commander_id: int, mails: list, apply: bool)
                     elif att_type == 2:
                         from src.orm.item import add_item
                         add_item(commander_id, att_item_id, att_qty)
+                    elif att_type == 4:
+                        for _ in range(max(1, int(att_qty))):
+                            new_ships.append(client.commander.add_ship(att_item_id))
                     elif att_type in (14, 15, 31):
                         # attire drops: persist ownership (SC_11003 lists); the
                         # DROPINFO in the claim result unlocks it client-side.
@@ -136,7 +141,19 @@ async def _collect_attachment_drops(commander_id: int, mails: list, apply: bool)
             for att in attachments:
                 drops.append(_mail_attachment_to_drop_info(att))
         mail_ids.append(mail.get("id", 0))
-    return mail_ids, _merge_drop_infos(drops)
+    return mail_ids, _merge_drop_infos(drops), new_ships
+
+
+async def _push_new_ships(client: Client, new_ships: list) -> None:
+    """Push the incremental dock packet so mail-granted ships appear live."""
+    if not new_ships:
+        return
+    from src.answer.shipinfo.builder import build_ship_infos
+
+    response = protobuf.SC_12042()
+    for ship in build_ship_infos(new_ships, client.commander.commander_id):
+        response.ship_list.append(ship)
+    await client.send_message(12042, response)
 
 
 async def _update_mail_field(commander_id: int, mail_id: int, field: str, value):
@@ -174,6 +191,7 @@ async def handle_mail_deal_command(buffer: bytes, client: Client) -> tuple[int, 
     commander_id = client.commander.commander_id
     mail_ids = []
     drops = []
+    new_ships = []
     dirty = True
 
     if cmd == MAIL_CMD_READ:
@@ -206,7 +224,7 @@ async def handle_mail_deal_command(buffer: bytes, client: Client) -> tuple[int, 
             mails[:] = [m for m in mails if m["id"] not in set(mail_ids)]
 
     elif cmd == MAIL_CMD_ATTACHMENT:
-        mail_ids, drops = await _collect_attachment_drops(commander_id, target_mails, True)
+        mail_ids, drops, new_ships = await _collect_attachment_drops(client, target_mails, True)
         if mail_ids:
             try:
                 from src.answer.task_handlers import schedule_emit, schedule_possession_sync
@@ -216,7 +234,7 @@ async def handle_mail_deal_command(buffer: bytes, client: Client) -> tuple[int, 
                 pass
 
     elif cmd == MAIL_CMD_OVERFLOW:
-        mail_ids, drops = await _collect_attachment_drops(commander_id, target_mails, False)
+        mail_ids, drops, _ = await _collect_attachment_drops(client, target_mails, False)
 
     elif cmd == MAIL_CMD_MOVE:
         for mail in target_mails:
@@ -234,5 +252,10 @@ async def handle_mail_deal_command(buffer: bytes, client: Client) -> tuple[int, 
         mail_ids = [m["id"] for m in mails if not m.get("is_archived", False)]
 
     await _send_mail_deal_result(client, 0, mail_ids, drops, unread_count)
+    if new_ships:
+        try:
+            await _push_new_ships(client, new_ships)
+        except Exception:
+            pass
     return 0, 30007, None
 
