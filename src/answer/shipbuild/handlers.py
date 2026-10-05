@@ -61,11 +61,42 @@ def handle_ship_build(
               f"cid={client.commander.commander_id} pool={pool_id} count={count} cost_type={cost_type}",
               LOG_LEVEL_DEBUG)
 
+    cid = client.commander.commander_id
+
+    # The client's own dock UI has a hard cap of MAX_BUILD_WORK_COUNT (10)
+    # total builds (running + queued) - wishing_well.py's _do_pray_build
+    # already enforces this for its own draw path, but this normal build
+    # path never did. Confirmed live: building several ships at once
+    # landed fine on an EMPTY dock, but if even one build already existed
+    # (from an earlier build not yet collected), the total exceeded 10 and
+    # every ship past the client's own fixed-size slot array rendered a
+    # garbage countdown ("99:99:99") and refused to ever finish - a real
+    # client-side softlock requiring a full reset, not fixable after the
+    # fact once the bad rows exist. Clamp BEFORE drawing, same "count only
+    # in-progress (not finished) builds against the cap" logic as
+    # wishing_well.py, so this can never happen regardless of count.
+    from src.consts.build import MAX_BUILD_WORK_COUNT
+    _now_utc = datetime.datetime.now(datetime.timezone.utc)
+    _in_progress = 0
+    for _b in (getattr(client.commander, "builds", []) or []):
+        _fa = _b.get("finishes_at")
+        if _fa is None:
+            _in_progress += 1
+            continue
+        if getattr(_fa, "tzinfo", None) is None:
+            _fa = _fa.replace(tzinfo=datetime.timezone.utc)
+        if _fa > _now_utc:
+            _in_progress += 1
+    count = min(count, max(0, MAX_BUILD_WORK_COUNT - _in_progress))
+    if count <= 0:
+        response.result = 2
+        asyncio.create_task(client.send_message(12003, response))
+        return 0, 12003, None
+
     gold_cost, cube_cost = _build_cost_normal(pool_id)
     gold_cost *= count
     cube_cost *= count
 
-    cid = client.commander.commander_id
     if cost_type == 0:
         if not _has_enough_resource(cid, 1, gold_cost):
             response.result = 2

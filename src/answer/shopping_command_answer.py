@@ -324,9 +324,27 @@ async def handle_shop_purchase(buffer: bytes, client: Client) -> tuple[int, int,
 
 
     if offer_type == 1:
+        # Yostar's own shop_template.json genuinely encodes the 4
+        # "buy_oil" offers (ids 13-16, the "Spend N Gems to buy 500 Oil"
+        # quick-refill tiers shown when a commission/build needs more oil
+        # than the commander has) with number=-1 - a real placeholder in
+        # the official data, not a seeding bug (confirmed: no other genre
+        # in the whole template uses num=-1). The real game grants a
+        # fixed 500 Oil per purchase regardless of which gem-cost tier;
+        # the escalating cost (50/100/200/400 gems) across tiers is
+        # selected by purchase count (limit_args), not a multiplier on
+        # this placeholder. Multiplying it blindly (-1 * count) produced
+        # a negative "amount"/drop number that crashed protobuf
+        # serialization (`ValueError: Value out of range: -1` in
+        # DROPINFO, an unsigned field) - which made the whole purchase
+        # flow hang/loop for the player (SC_16002 never sent, so the
+        # client never got a response and retried forever).
         for resource_id in effects:
-            _add_resource(cid, resource_id, total_number)
-            drop_list.append({"type": offer_type, "id": resource_id, "number": total_number})
+            grant_number = total_number
+            if shop_offer.get("genre") == "buy_oil" and base_number == -1:
+                grant_number = 500 * count
+            _add_resource(cid, resource_id, grant_number)
+            drop_list.append({"type": offer_type, "id": resource_id, "number": grant_number})
     elif offer_type == 2:
         from src.orm.item import resolve_virtual_item_drops as _resolve_drops
         for pack_id in effects:
