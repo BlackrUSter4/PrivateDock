@@ -339,12 +339,26 @@ async def handle_shop_purchase(buffer: bytes, client: Client) -> tuple[int, int,
         # DROPINFO, an unsigned field) - which made the whole purchase
         # flow hang/loop for the player (SC_16002 never sent, so the
         # client never got a response and retried forever).
-        for resource_id in effects:
+        # NOTE: iterate using a name other than `resource_id` - that name
+        # is also the OUTER cost-currency variable set above (from
+        # shop_offer["resource_id"], e.g. gems for a buy_oil purchase).
+        # Looping as `for resource_id in effects` silently overwrote it
+        # with whatever was just GRANTED (e.g. 2/Oil) instead of what was
+        # actually OWED (e.g. 14/Gems) - a real, separate bug found live
+        # 2026-10-04 while verifying the number=-1 fix above: a buy_oil
+        # purchase granted the right Oil amount but then "paid" by
+        # consuming that SAME amount of Oil right back out (since
+        # _consume_resource(cid, resource_id, total_cost) runs later
+        # using whatever this loop left `resource_id` set to), netting
+        # far less Oil than intended and never actually charging any
+        # Gems at all. Confirmed via a live before/after balance check:
+        # oil only increased by 450 instead of 500, gems untouched.
+        for granted_resource_id in effects:
             grant_number = total_number
             if shop_offer.get("genre") == "buy_oil" and base_number == -1:
                 grant_number = 500 * count
-            _add_resource(cid, resource_id, grant_number)
-            drop_list.append({"type": offer_type, "id": resource_id, "number": grant_number})
+            _add_resource(cid, granted_resource_id, grant_number)
+            drop_list.append({"type": offer_type, "id": granted_resource_id, "number": grant_number})
     elif offer_type == 2:
         from src.orm.item import resolve_virtual_item_drops as _resolve_drops
         for pack_id in effects:
